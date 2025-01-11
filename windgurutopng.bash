@@ -1,6 +1,6 @@
 #!/bin/bash
 # Larukiten windguru-overlay. v20251101_01 / Jyrki Tikka
-# adds windguru anemometer readings to transparent png file what is used as a webcam picture at https://larukite.fi/webcam
+# adds windguru anemometer readings to transparent png file what is used as a webcam background picture at https://larukite.fi/webcam
 
 STATIONID=47
 PASSWORD=salattu
@@ -26,14 +26,14 @@ cat $WORKDIR/tmpdata.txt |tr ',' '\n' |grep wind|awk -F ',' '{print $1}'|cut -d 
 # wind direction
 cat $WORKDIR/tmpdata.txt |tr ',' '\n' |grep wind|awk -F ',' '{print $1}'|cut -d ':' -f2|tail -1|cut -d '.' -f1|xargs -i echo "direction {}" >> $WORKDIR/larukitepng.txt
 
-# työnnetään data pohjakuvaan
-# -gravity South jos otetaan täyden ruudun overlay käyttöön
-# ekana leveyssuunta, sitten korkeus. + gravity vielä vaikuttaa
 TEXT=$(cat $WORKDIR/larukitepng.txt)
 
-
-# tarkastetaan rivimäärä, jos lopputulos onkin jotain ihan paskaa niin se ei ilmesty kameraan
+# check how many lines in the textfile, if output is a mess it won't be added to the picture
 lines=$(cat $WORKDIR/larukitepng.txt |wc -l)
+
+# add data to background picture
+# -gravity South if using full screen overlay
+# first width, then height, + gravity
 
 if [ $lines -eq 5 ]; then
 	convert -font Helvetica-Bold -fill white -pointsize 42 -stroke black -strokewidth 2 -draw "text 245,125 '$TEXT'" -gravity South $WORKDIR/$BASEIMAGE $DESTIMG
