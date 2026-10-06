@@ -1,41 +1,159 @@
 #!/bin/bash
-# Larukiten windguru-overlay. v20251101_01 / Jyrki Tikka
-# adds windguru anemometer readings to transparent png file what is used as a webcam background picture at https://larukite.fi/webcam
+# Larukiten windguru-overlay. v04102026_01 / Jyrki Tikka
+#
 
-STATIONID=47
-PASSWORD=salattu
-BASEIMAGE=larukite_kelikamera_overlay.png
-WORKDIR=/home/jyka/local/bin/dev
-DESTIMG=/home/jyka/local/bin/dev/larukitepng.png
-#/home/users/jyka/larukite
+set -euo pipefail
+
+##############################################################################
+# CONFIG
+##############################################################################
+
+# työskentelyhakemisto
+BASE="/home/users/jyka/larukite"
+
+# väliaikaistiedostot
+TMP="$BASE/tmpdata.txt"
+TXT="$BASE/larukitepng.txt"
+
+# peruskuva minkä päälle lisätään tietoa:
+OVERLAY="$BASE/larukite_kelikamera_overlay.png"
+
+# tänne kirjoitetaan lopputulos tuuli- ja lämpötiladatoineen kameran noudettavaksi:
+OUTPUT="/home/users/jyka/AA_KUVAT.JYKA.FI-JAKO/larukitepng.png"
+
+# tuulidatan noutourl
+WG_URL="https://www.windguru.cz/int/wgsapi.php?q=station_data_current&id_station=47&date_format=Y-m-d+H%3Ai%3As+T&&password=HIDDEN"
+
+# lämpötilan noutopaikka
+FMI_URL="https://opendata.fmi.fi/wfs?request=getFeature&storedquery_id=fmi::observations::weather::simple&place=Harmaja"
+
+# vedenlämmön noutopaikka
+BEACH_URL="https://api.hel.fi/servicemap/v2/unit/40098/?include=observations"
+
+##############################################################################
+# HARMAJA AIR TEMPERATURE
+##############################################################################
+HARMAJA_TEMP=$(
+    curl -s "$FMI_URL" |
+    grep -A1 '<BsWfs:ParameterName>t2m' |
+    grep 'ParameterValue' |
+    grep -v NaN |
+    sed 's/.*<BsWfs:ParameterValue>//;s/<\/BsWfs:ParameterValue>.*//' |
+    tail -1
+)
+
+##############################################################################
+# SEA TEMPERATURE FROM LAUTTASAARI BEACH SENSOR
+##############################################################################
+
+BEACH_JSON=$(curl -s "$BEACH_URL")
+
+WATER_TEMP=$(
+    echo "$BEACH_JSON" |
+    jq -r '.observations[]
+    | select(.property=="measured_swimming_water_temperature")
+    | .value'
+)
+
+WATER_TIME=$(
+    echo "$BEACH_JSON" |
+    jq -r '.observations[]
+    | select(.property=="measured_swimming_water_temperature")
+    | .time'
+)
 
 
-# end of variables
+#vedenlämmön mittauksen ikä:
+WATER_AGE=$(( ($(date +%s) - $(date -d "$WATER_TIME" +%s)) / 3600 ))
 
-cd $WORKDIR
+##############################################################################
+# WINDGURU
+##############################################################################
 
-# create a tmp datafile
-curl -q "https://www.windguru.cz/int/wgsapi.php?q=station_data_current&id_station=$STATIONID&date_format=Y-m-d+H%3Ai%3As+T&&password=$PASSWORD" > $WORKDIR/tmpdata.txt
+curl -s "$WG_URL" > "$TMP"
 
-# date and time to the pic
-cut -d ':' -f9,10 $WORKDIR/tmpdata.txt |cut -c2- > $WORKDIR/larukitepng.txt
+DATESTAMP=$(cut -d ':' -f9,10 "$TMP" | cut -c2-)
 
-# get and reshape wind data. Change knots to m/s.
-cat $WORKDIR/tmpdata.txt |tr ',' '\n' |grep wind|awk -F ',' '{print $1}'|cut -d ':' -f2|xargs -i echo "scale=1; {}/1.94384449"|bc|sed '1 s/^/avg /'|sed '2 s/^/max /' |sed '3 s/^/min /'|sed '4d'|sed '1 s#$# m/s#' |sed '2 s#$# m/s#' |sed '3 s#$# m/s#' >> $WORKDIR/larukitepng.txt 
+eadarray -t WIND_VALUES < <(
+    tr ',' '\n' < "$TMP" |
+    grep wind |
+    cut -d ':' -f2 |
+    while read -r v
+    do
+        echo "scale=1; $v/1.94384449" | bc
+    done
+)
 
-# wind direction
-cat $WORKDIR/tmpdata.txt |tr ',' '\n' |grep wind|awk -F ',' '{print $1}'|cut -d ':' -f2|tail -1|cut -d '.' -f1|xargs -i echo "direction {}" >> $WORKDIR/larukitepng.txt
+AVG_WIND="${WIND_VALUES[0]}"
+MAX_WIND="${WIND_VALUES[1]}"
+MIN_WIND="${WIND_VALUES[2]}"
 
-TEXT=$(cat $WORKDIR/larukitepng.txt)
+WIND_DIR=$(
+    tr ',' '\n' < "$TMP" |
+    grep wind |
+    cut -d ':' -f2 |
+    tail -1 |
+    cut -d '.' -f1
+)
 
-# check how many lines in the textfile, if output is a mess it won't be added to the picture
-lines=$(cat $WORKDIR/larukitepng.txt |wc -l)
+##############################################################################
+# WIND COLUMN
+##############################################################################
 
-# add data to background picture
-# -gravity South if using full screen overlay
-# first width, then height, + gravity
+cat > "$TXT" <<EOF
+$DATESTAMP
+avg $AVG_WIND m/s
+max $MAX_WIND m/s
+min $MIN_WIND m/s
+direction $WIND_DIR
+EOF
 
-if [ $lines -eq 5 ]; then
-	convert -font Helvetica-Bold -fill white -pointsize 42 -stroke black -strokewidth 2 -draw "text 245,125 '$TEXT'" -gravity South $WORKDIR/$BASEIMAGE $DESTIMG
-        exit 0
+WIND_TEXT=$(cat "$TXT")
+
+
+
+##############################################################################
+# TEMP COLUMN
+##############################################################################
+EMP_TEXT="air ${HARMAJA_TEMP} C
+sea ${WATER_TEMP} C (${WATER_AGE}h)"
+
+
+##############################################################################
+# RENDER
+##############################################################################
+
+if [ -s "$TXT" ]; then
+
+# sivuttaissijainti:
+WIND_X=630
+TEMP_X=240
+
+# korkeus pohjalta:
+WIND_Y=20
+TEMP_Y=150
+
+
+convert "$OVERLAY" \
+\
+-font Helvetica-Bold \
+-fill white \
+-pointsize 40 \
+-stroke black \
+-strokewidth 2 \
+-gravity SouthWest \
+-annotate +${TEMP_X}+${TEMP_Y} "$TEMP_TEXT" \
+\
+-font Helvetica-Bold \
+-fill white \
+-pointsize 55 \
+-stroke black \
+-strokewidth 3 \
+-gravity SouthWest \
+-annotate +${WIND_X}+${WIND_Y} "$WIND_TEXT" \
+\
+"$OUTPUT"
+
+
 fi
+exit 0
